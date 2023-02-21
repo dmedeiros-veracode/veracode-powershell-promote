@@ -1,0 +1,37 @@
+- stage: Promote_Passing_Sandbox_Scan_to_Policy
+  jobs:
+   - job: Check_Latest_Sandbox_Scan_for_Pass_or_Fail
+     steps:
+     - task: PowerShell@2
+       inputs:
+        targetType: 'inline'
+        script: |
+          Write-Output "Downloading the latest version of the Veracode Java API"
+          $versionstring = curl https://repo1.maven.org/maven2/com/veracode/vosp/api/wrappers/vosp-api-wrappers-java/maven-metadata.xml | Out-String -Stream | Select-String -Pattern 'latest';
+          $version = $versionstring -replace '\s','' -replace '<latest>','' -replace '</latest>','';
+          curl https://repo1.maven.org/maven2/com/veracode/vosp/api/wrappers/vosp-api-wrappers-java/$version/vosp-api-wrappers-java-$version-dist.zip -o dist.zip
+          7z e dist.zip -y
+          $appname = "NodeJS"
+          java -jar VeracodeJavaAPI.jar -vid $(vid) -vkey $(vkey) -action getapplist | tee appidlist.txt
+          $veracodeappid = (Get-Content .\appidlist.txt | Select-String $appname).Line.Split('"')[1]
+          Write-Output "Pulling the Sandbox ID List"
+          java -jar VeracodeJavaAPI.jar -vid $(vid) -vkey $(vkey) -action getsandboxlist -appid $veracodeappid | tee sandboxlist.txt
+          $veracodesandboxid = (Get-Content .\sandboxlist.txt | Select-String -Pattern "sandbox_id=").Line.Split('"')[9] | Select-Object -Last 1
+          Write-Output "Pulling the Build ID List"
+          java -jar VeracodeJavaAPI.jar -vid $(vid) -vkey $(vkey) -action getbuildlist -appid $veracodeappid -sandboxid $veracodesandboxid | tee getbuildlist.txt
+          $veracodebuildid = (Get-Content .\getbuildlist.txt | Select-String -Pattern "build_id=").Line.Split('"')[1] | Select-Object -Last 1
+          java -jar VeracodeJavaAPI.jar -vid $(vid) -vkey $(vkey) -action passfail -appname $appname -sandboxid $veracodesandboxid > passfail.txt
+          cat passfail.txt
+          $scanresult = (Get-Content .\passfail.txt).split(',').trim('"')[-1]
+          Write-Output $scanresult
+          If ($scanresult -eq "Pass")
+          {
+            Write-Output "The Veracode Sandbox Scan Passed, Promoting the Latest Scan"
+            Write-Output $veracodebuildid
+            java -jar VeracodeJavaAPI.jar -vid $(vid) -vkey $(vkey) -action PromoteSandbox -buildid $veracodebuildid
+          }
+          elseif ($scanresult -eq "Did Not Pass")
+          {   
+            Write-Output "The Veracode Sandbox Scan Did Not Pass, Failing the Build "
+            throw "Exception Thrown for Failed Policy Scan"
+          }
